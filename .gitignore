@@ -1,0 +1,24 @@
+# Virtual environments
+myenv/
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyd
+*.so
+
+# Build artifacts
+build/
+*.egg-info/
+
+# Weights / checkpoints / large data
+*.safetensors
+*.pt
+*.bin
+data/
+
+# OS
+.DS_Store
+Thumbs.db
