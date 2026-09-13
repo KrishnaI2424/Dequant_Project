@@ -56,10 +56,15 @@ def report(name, spec):
           f"tied={spec.tied_embedding}")
 
     # --- fp16 baseline, three-way split -----------------------------------
-    print(f"\n  fp16 decode-step bytes @ {PEAK_BW_GB_S:.0f} GB/s theoretical peak")
+    # GPT-2 tops out at 1024 tokens; sweeping past a model's context limit
+    # would report KV traffic for tokens it cannot represent.
+    seq_lens = [n for n in SEQ_LENS if n <= spec.max_context]
+
+    print(f"\n  fp16 decode-step bytes @ {PEAK_BW_GB_S:.0f} GB/s theoretical peak"
+          f"  (max_context {spec.max_context:,})")
     print(f"  {'seq_len':>8}{'layers MB':>12}{'lm_head MB':>12}{'kv MB':>10}"
           f"{'act MB':>9}{'total MB':>11}{'floor ms':>10}{'tok/s':>8}")
-    for n in SEQ_LENS:
+    for n in seq_lens:
         b = decode_bytes(spec, n)
         ms = predicted_latency_s(b["total"], PEAK_BW_GB_S) * 1e3
         print(f"  {n:>8}{mb(b['layer_weights']):>12.1f}{mb(b['lm_head']):>12.1f}"
@@ -67,7 +72,7 @@ def report(name, spec):
               f"{mb(b['total']):>11.1f}{ms:>10.2f}{1e3 / ms:>8.0f}")
 
     # --- the Amdahl bound (OUTLINE section 5) ------------------------------
-    n = 4096
+    n = min(4096, spec.max_context)
     fp16 = decode_bytes(spec, n)
     int4 = decode_bytes(spec, n, weight_dtype="int4", lm_head_dtype="fp16")
     both = decode_bytes(spec, n, weight_dtype="int4", lm_head_dtype="int4")

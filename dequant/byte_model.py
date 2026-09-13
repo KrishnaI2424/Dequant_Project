@@ -38,6 +38,7 @@ class ModelSpec:
     proj_bias: bool      # output/down projection biases (gpt2 only).
     norm_bias: bool      # LayerNorm (weight+bias) vs RMSNorm (weight only).
     n_positions: int     # learned position embeddings; 0 when RoPE.
+    max_context: int     # longest sequence the model can represent.
 
     @property
     def q_dim(self):
@@ -70,6 +71,7 @@ def spec_from_hf_config(cfg, name=None):
             proj_bias=True,
             norm_bias=True,
             n_positions=cfg["n_positions"],
+            max_context=cfg["n_positions"],
         )
 
     if mt in ("llama", "qwen2", "mistral"):
@@ -91,6 +93,7 @@ def spec_from_hf_config(cfg, name=None):
             proj_bias=False,
             norm_bias=False,
             n_positions=0,
+            max_context=cfg["max_position_embeddings"],
         )
 
     raise ValueError(f"unsupported model_type: {mt!r}")
@@ -111,6 +114,7 @@ LLAMA_3_2_1B_CONFIG = {
     "vocab_size": 128256,
     "tie_word_embeddings": True,
     "attention_bias": False,
+    "max_position_embeddings": 131072,
 }
 
 
