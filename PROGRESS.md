@@ -7,6 +7,54 @@ Newest entries at the top. See `OUTLINE.md` for the full plan.
 
 ## Phase 0 — Instrumentation and roofline
 
+### Decision — Llama-3.2-3B-Instruct is now the primary bandwidth-benchmark model
+
+GPT-2 measured at 5.7% of peak bandwidth eager / 48.5% under CUDA-graph capture --
+too small, decode is dispatch-bound not memory-bound. Ran the same harness on
+`unsloth/Llama-3.2-3B-Instruct` (ungated mirror; 3,212,749,824 params, exact match
+to the analytical byte model with zero code changes): **75.9% of peak at
+seq_len=512 under CUDA-graph capture**, 1.3x off the analytical floor -- a genuine
+bandwidth-bound regime. `OUTLINE.md` section 2 updated to make it primary; the 1B
+is kept as an architecture reference for the sections written against its specific
+numbers (section 5's LM-head case study, section 7's decode budget).
+
+Efficiency decays with context (75.9% -> 61.7% -> 50.0% at seq 512/2048/4096) because
+the KV-read path is far less efficient than the weight GEMVs -- incremental bytes
+between seq 512 and 4096 cost ~35 GB/s (~7.8% of peak) even graphed, against ~340
+GB/s for the weights at seq 512. Worth keeping in mind for the section 11
+hard-stop-at-week-7 decision: Phase 1 (weights) is optimizing a path already near
+roofline on this model; Phases 3-4 (KV cache) are optimizing one at roughly a tenth
+of roofline.
+
+Predicted INT4 speedup at 3B stays large (2.5-3.4x from the byte model) and is not
+diminished by any of this -- the LM head being a smaller share of total bytes here
+(12.1% vs. 20-27% on the smaller models) only shrinks the *additional* win from
+quantizing the head on top of the layers, not the main layer-quantization effect.
+The real caveat is sequencing, not magnitude: that speedup is only visible in
+wall-clock time under low-dispatch conditions (graphs/fusion) -- in plain eager mode
+today, dispatch (42.5 ms) already dwarfs the fp16 floor (15.4 ms) at 3B, so an INT4
+kernel alone won't move eager wall-clock much until Phase 2/5 cut dispatch down too.
+
+### Environment fix — venv moved out of OneDrive
+
+`myenv/` was sitting inside the OneDrive-synced project tree and had grown to
+3.2 GB (`torch` alone is 2.7 GB, mostly bundled CUDA runtime libraries).
+OneDrive was syncing every package file to the cloud as if it were project
+content, which (a) was filling the OneDrive quota and (b) caused the
+intermittent "Access is denied" errors during `uv`/`pip` installs earlier in
+Phase 0 -- OneDrive holds a sync lock on files mid-write.
+
+Moved to `C:\Users\krish\envs\LLM-testing\` (same drive, so the move was an
+instant rename, not a 3 GB copy). Verified afterward: torch/CUDA and all four
+packages (`transformers`, `accelerate`, `safetensors`, `datasets`) import
+correctly from the new path with no reinstall needed. `Dequant_Project/`
+shrank from 3.3 GB to 129 MB in the OneDrive-synced tree.
+
+All commands below that show `../myenv/Scripts/python.exe` or
+`./myenv/Scripts/python.exe` predate this move -- substitute
+`C:/Users/krish/envs/LLM-testing/Scripts/python.exe` (or an equivalent
+relative path) going forward.
+
 ### Step 0/1 — Environment
 
 - Repo initialized (`Dequant_Project/`, local only — not pushed).

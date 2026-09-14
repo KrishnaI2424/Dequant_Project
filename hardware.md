@@ -72,7 +72,7 @@ per OUTLINE.md §9.
 |---|---|---|
 | Driver | 596.36 | from `nvidia-smi` |
 | CUDA (driver-reported) | 13.2 | from `nvidia-smi` |
-| Python | 3.14.5 | `myenv/Scripts/python.exe --version` |
+| Python | 3.14.5 | `python.exe --version` (venv path below) |
 | torch | 2.12.0+cu132 | |
 | transformers | 5.17.0 | |
 | accelerate | 1.15.0 | |
@@ -80,6 +80,8 @@ per OUTLINE.md §9.
 | datasets | 5.0.1 | |
 | numpy | 2.5.3 | pulled in by torch/transformers; recorded for completeness |
 | torchvision | 0.27.0+cu132 | pulled in alongside torch; not directly used but pinned for env reproducibility |
+
+**Virtual environment location**: `C:/Users/krish/envs/LLM-testing/` -- deliberately OUTSIDE the OneDrive-synced project tree. It was originally created at `LLM-testing/myenv/` and moved out after two problems traced back to OneDrive syncing it: (1) `uv`/`pip` installs intermittently failed with "Access is denied" removing files mid-write while OneDrive held a sync lock on them, and (2) the venv's installed packages (`torch` alone is 2.7 GB) were being synced to OneDrive's cloud quota as if they were project content, filling it. A venv is disposable and rebuildable from pinned versions; it does not belong in a synced folder.
 
 Nsight tools (invoke via these exact paths — a second, older Nsight Systems
 install, 2025.6.3, is also present on this machine; do not use it for this
@@ -92,8 +94,8 @@ project):
 
 Verification commands:
 ```
-./myenv/Scripts/python.exe -c "import torch;p=torch.cuda.get_device_properties(0);print(torch.__version__, torch.version.cuda, p.name, p.major, p.minor, p.multi_processor_count, p.total_memory)"
-./myenv/Scripts/python.exe -m pip list
+C:/Users/krish/envs/LLM-testing/Scripts/python.exe -c "import torch;p=torch.cuda.get_device_properties(0);print(torch.__version__, torch.version.cuda, p.name, p.major, p.minor, p.multi_processor_count, p.total_memory)"
+C:/Users/krish/envs/LLM-testing/Scripts/python.exe -m pip list
 "C:/Program Files/NVIDIA Corporation/Nsight Compute 2026.2.1/ncu.bat" --version
 "C:/Program Files/NVIDIA Corporation/Nsight Systems 2026.1.3/target-windows-x64/nsys.exe" --version
 ```
