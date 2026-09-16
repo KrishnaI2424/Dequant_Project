@@ -7,6 +7,61 @@ Newest entries at the top. See `OUTLINE.md` for the full plan.
 
 ## Phase 1 — W4A16 dequant-GEMV and the format sweep
 
+### Direct proof that smaller storage widths read faster (`scripts/bandwidth_by_dtype.py`)
+
+The fake-quantization runs (below) could not show a speedup by construction
+-- they dequantize back to fp16 before the forward pass, so every format
+moves identical bytes. This is a different, narrower experiment that isolates
+the one physical claim the whole project rests on: does storing the same
+logical weights in a smaller dtype actually reduce DRAM read time? No model,
+no matmul, no dequantization -- just allocate Llama-3.2-3B's real weight
+volume at each storage width and read every byte.
+
+**First attempt was wrong, and worth recording why.** The initial version
+summed the raw bytes as `uint8 -> int64`. It ran at 22.7 GB/s -- 5.9% of
+theoretical peak -- meaning it was compute-bound on the int64 accumulator,
+not memory-bound at all. It still produced clean 2.00x/4.00x scaling with
+byte count, which *looked* like a result. That is precisely the trap: a
+compute-bound op scales with element count too, so the wrong measurement can
+still look like the right one. Switched to viewing the same raw bytes as
+fp16 and reducing to fp32, verified to hit 94.2% of theoretical peak, before
+trusting any number from it.
+
+**That also surfaced a real gap in the project's own reference numbers**:
+`hardware.md`'s "384 GB/s practical peak" turns out to be a **copy**
+benchmark (read + write). Decode is almost entirely weight **reads**. A
+pure-read op reaches **421.8 GB/s (94.2% of theoretical)**, ~9% higher than
+the copy figure -- large enough to change conclusions, and it already had:
+see the correction in the accuracy-reference entry below, where the fp16
+decode step's efficiency was 88.7% against the wrong denominator and is
+80.8% against the right one. `hardware.md` section 2b now documents both
+ceilings and which applies when.
+
+**Result** -- reading Llama-3.2-3B's real weight volume (2,818,572,288 layer
++ 394,002,432 LM head values) at each width, same op, only byte count varies:
+
+| Storage | MB read | ms | GB/s | % read peak | vs fp16 |
+|---|---|---|---|---|---|
+| fp16 (today) | 6425 | 15.357 | 418.4 | 99.2% | 1.00x |
+| int8 | 3607 | 8.647 | 417.1 | 98.9% | **1.78x** |
+| int4 packed | 2197 | 5.282 | 416.0 | 98.6% | **2.91x** |
+
+...and with the LM head also quantized (not the section 5 default, but shown
+for completeness): int8 **1.99x**, int4 **3.96x** -- against a theoretical
+2.00x/4.00x, about as clean as a measurement gets. All three cases sit at
+98-99% of read peak, i.e. genuinely DRAM-limited, so the runtime differences
+are real and are caused by nothing but byte count.
+
+This is the direct, load-bearing evidence that the whole project's central
+claim -- fewer bytes in DRAM means faster decode -- holds physically on this
+card, independent of whatever the eventual kernel's overhead turns out to be.
+It is also why the fp16-head rows cap at 2.91x rather than 4x: the 788 MB
+unquantized LM head becomes 36% of all traffic once the layers shrink to
+int4, `OUTLINE.md` section 5's Amdahl argument as a measured number instead
+of a prediction.
+
+Results: `results/bandwidth_by_dtype_20260915-183609.json`.
+
 ### Accuracy reference on real Llama-3.2-3B weights (`scripts/eval_quantized.py`)
 
 Simulated quantization only -- no dequant-GEMV kernel exists yet (that's still
@@ -102,6 +157,14 @@ because two things fall out of it:
 perplexity pass instead -- 2048-token windows in single forward calls,
 compute-bound GEMM. Wrong regime for this project; replaced by the decode
 table above.)
+
+(Correction, see the bandwidth-by-dtype entry below: "384 GB/s practical
+peak" above is the wrong denominator for a read-dominated decode step -- it
+is a copy figure, which pays for a write as well as a read. The correct
+read-only ceiling is 421.8 GB/s, so the fp16 decode step's true efficiency is
+**80.8%**, not 88.7%. The ~148 tok/s Phase 1 target is unaffected: it was
+derived from decode_bytes_report.py's byte predictions, not from this %peak
+figure.)
 
 Results: `results/quant_accuracy_unsloth_Llama-3.2-3B-Instruct_20260915-082450.json`.
 

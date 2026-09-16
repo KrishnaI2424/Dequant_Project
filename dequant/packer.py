@@ -17,11 +17,12 @@ has to think about sign.
 
 Packing layouts (4-bit, 8 values per uint32):
     sequential   value i occupies bits [4i, 4i+4). Simple, one shift+mask each.
-    interleaved  nibble order [0,2,4,6,1,3,5,7]. Lets the kernel pull four
-                 values at once with (w >> 0) & 0x0F0F0F0F and the other four
-                 with (w >> 4) & 0x0F0F0F0F -- two ops instead of eight. This
-                 is the axis section 5 says nobody documents clearly, so it is
-                 measured rather than assumed.
+    interleaved  slot s holds logical value _INTERLEAVE[bits][s], so
+                 (w >> 4*i) & 0x000F000F puts the CONSECUTIVE logical pair
+                 (2i, 2i+1) in the word's two 16-bit halves -- exactly the
+                 shape the fp16 magic-number conversion (| 0x64006400, then
+                 one __hsub2) consumes. This is the axis section 5 says nobody
+                 documents clearly, so it is measured rather than assumed.
 
 Layout mismatch between packer and kernel is the number-one source of silent
 wrong answers in this project (section 11), so QuantConfig is carried around

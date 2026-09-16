@@ -30,7 +30,11 @@ setup(
     ext_modules=[
         CUDAExtension(
             name="dequant_cuda",
-            sources=[str(KERNELS / "smoke.cu")],
+            sources=[
+                str(KERNELS / "smoke.cu"),
+                str(KERNELS / "dequant_gemv.cu"),
+                str(KERNELS / "bindings.cpp"),
+            ],
             extra_compile_args={"cxx": [], "nvcc": nvcc_args},
         )
     ],

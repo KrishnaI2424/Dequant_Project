@@ -64,7 +64,40 @@ GDDR6 QDR. This calculation follows the simple clock×2×bus/8 convention this
 project has standardized on (per OUTLINE.md §4); it is a nominal peak for
 normalization purposes, not a vendor-certified line-rate figure. Achieved
 bandwidth should always be reported as a percentage of this 448.032 GB/s number,
-per OUTLINE.md §9.
+per OUTLINE.md §9 — but see §2b below for the practical (measured, reachable)
+ceiling, which is a different and lower number, and which differs further
+depending on whether the operation being judged is read-only or read+write.
+
+## 2b. Practical bandwidth ceilings — read vs. copy are different numbers
+
+Theoretical peak (§2) is a nominal upper bound; no real kernel reaches it. Two
+distinct practical ceilings were measured, and **the choice between them
+matters** — using the wrong one has already produced a misleading %-of-peak
+figure once (see PROGRESS.md, corrected there).
+
+| Operation | GB/s | % of theoretical (448.032) |
+|---|---|---|
+| `uint8` copy_ (read + write, 1 GiB buffer) | 385.4 | 86.0% |
+| fp16 `.sum(float32)` (read only, 1 GiB buffer) | 421.8 | 94.2% |
+
+A copy pays for both a read and a write every byte; decode is overwhelmingly
+weight **reads** (the GEMV loads weights, it does not write them back), so
+**421.8 GB/s is the correct denominator for any decode-step %-of-peak claim**,
+not the 385.4 GB/s copy figure. The two are ~9% apart, which is large enough
+to change conclusions — a decode step measured at 340.6 GB/s is 88.7% of the
+copy figure but only 80.8% of the read figure.
+
+Getting this wrong is easy: a naive reduction op can be compute-bound rather
+than bandwidth-bound and silently invalidate the whole measurement regardless
+of which ceiling you compare against. `uint8.sum(dtype=torch.int64)` over the
+same 1 GiB buffer runs at **22.7 GB/s (5.9% of theoretical)** — compute-bound
+on the int64 accumulator, not memory-bound at all. The fp16-view-and-sum
+formulation above was chosen specifically because it saturates read
+bandwidth (94.2% of theoretical) rather than measuring accumulator throughput.
+Any future bandwidth microbenchmark in this project should use an op verified
+to land in the 90%+-of-theoretical range before its number is trusted.
+
+Reproduce with `scripts/bandwidth_by_dtype.py`.
 
 ## 3. Pinned software versions
 

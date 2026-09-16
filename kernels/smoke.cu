@@ -4,6 +4,8 @@
 #include <cuda_runtime.h>
 #include <c10/cuda/CUDAException.h>
 
+#include "dequant_cuda.h"
+
 __global__ void add_one_kernel(const float* __restrict__ in,
                                float* __restrict__ out, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -20,8 +22,4 @@ torch::Tensor add_one(torch::Tensor x) {
                                         out.data_ptr<float>(), n);
     C10_CUDA_CHECK(cudaGetLastError());
     return out;
-}
-
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("add_one", &add_one, "add one (CUDA)");
 }
