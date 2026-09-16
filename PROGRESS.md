@@ -5,6 +5,112 @@ Newest entries at the top. See `OUTLINE.md` for the full plan.
 
 ---
 
+## Phase 1 — W4A16 dequant-GEMV and the format sweep
+
+### Accuracy reference on real Llama-3.2-3B weights (`scripts/eval_quantized.py`)
+
+Simulated quantization only -- no dequant-GEMV kernel exists yet (that's still
+ahead). Each real `nn.Linear.weight` in the 7 quantizable projection types
+(q/k/v/o/gate/up/down; norms and the tied LM head left fp16) is round-tripped
+through `dequant/packer.py`'s `quantize_tensor()` -> `dequantize()`, both
+plain PyTorch ops, and written back into the model's live GPU weight tensor.
+The forward pass afterward is ordinary fp16 matmul -- nothing about the
+compute path changes, only the numeric values do. This isolates the
+information loss from rounding; it says nothing about real kernel speed,
+since the model never leaves DRAM-materialized fp16 the whole way through
+(the entire point of the project is a kernel that avoids that -- see
+`OUTLINE.md` section 1).
+
+**Methodology bug caught and fixed first**: the first run's perplexity
+dataset (wikitext-2) failed to load (`HfUriError` -- the dataset moved to the
+`Salesforce/` org; bare `wikitext` fails on `datasets` 5.x) and silently fell
+back to repetitive synthetic filler text. Baseline perplexity came out at
+1.021 -- the model had no uncertainty left to lose, so quantization damage
+couldn't register in the number at all, even though the run "succeeded" with
+no error. Removed the fallback entirely; the script now raises rather than
+report a number computed on invalid data. Re-run on real wikitext-2 test
+(`Salesforce/wikitext`) gives a sane fp16 baseline perplexity of 10.586.
+
+**Weight error validates the packer's own gate.** 13.02% relative error for
+INT4 g128 symmetric on real Llama weights vs. the 12.6% the packer's unit
+test predicted for synthetic Gaussian data (`scripts/test_packer.py`) --
+close enough that Llama's per-group weight distribution is apparently
+near-Gaussian.
+
+Results, at seq_len=512 for the byte-model projection (LM head + norms fp16
+throughout):
+
+| Format | bits/wt | decode MB | byte speedup | rel err | ΔPPL |
+|---|---|---|---|---|---|
+| fp16 | 16.125 | 6490 | 1.00x | 0.00% | -- (10.586) |
+| INT8 g128 sym | 8.125 | 3716 | 1.75x | 0.72% | +0.013 |
+| INT4 g32 sym | 4.500 | 2438 | 2.66x | 10.41% | +0.696 |
+| **INT4 g128 asym** | 4.250 | 2350 | **2.76x** | 11.15% | **+0.654** |
+| INT4 g128 sym | 4.125 | 2306 | 2.81x | 13.02% | +1.366 |
+| INT4 per-channel | 4.000 | 2262 | 2.87x | 18.60% | +7.115 |
+| INT2 g128 sym | 2.125 | 1602 | 4.05x | 81.72% | +493510 (broken) |
+
+**Headline finding**: INT4 g128 asymmetric strictly dominates INT4 g32
+symmetric -- better perplexity (+0.654 vs +0.696) *and* fewer bytes (4.25 vs
+4.50 bits/weight). `OUTLINE.md` section 5 asked for asymmetric's cost to be
+measured; measured here, it isn't a cost, it's a net win. INT8 is
+effectively free (+0.013 ppl, byte-identical greedy generation) -- supports
+quantizing the LM head to INT8 per section 5. Per-channel INT4 is a bad
+trade (+7.115 ppl for 0.125 bits/weight saved vs. g128) -- group size is by
+far the most sensitive axis. INT2 is not viable as plain round-to-nearest
+(ppl ~493k, pure gibberish); section 8's "stretch goal" framing is correct.
+Error-to-damage is sharply nonlinear: a 43% increase in weight error
+(13.02% -> 18.60%) produced a 5.2x increase in perplexity damage, so
+element-wise weight error alone is a poor proxy and the sweep needs
+perplexity, not just error norms.
+
+**Decode throughput, measured in the right regime.** `eval_quantized.py`
+now calls `dequant.bench.time_decode_step()` per format (batch-1,
+seq_len=512, CUDA-graph capture -- the near-roofline regime; eager is
+dispatch-bound per the Phase 0 entry below). `%peak` is against the
+**measured practical peak of 384 GB/s**, not the 448 GB/s theoretical, and
+the byte count is the fp16 one because fake quantization means every format
+really does move fp16 bytes:
+
+| Format | decode ms | tok/s | % practical peak |
+|---|---|---|---|
+| fp16 | 19.055 | 52 | 88.7% |
+| INT8 g128 sym | 19.053 | 52 | 88.7% |
+| INT4 g32 sym | 19.057 | 52 | 88.7% |
+| INT4 g128 asym | 19.061 | 52 | 88.7% |
+| INT4 g128 sym | 19.066 | 52 | 88.6% |
+| INT4 per-channel | 19.069 | 52 | 88.6% |
+| INT2 g128 sym | 19.079 | 52 | 88.6% |
+
+Flat, as it must be -- there is no mechanism by which a format *label* can
+change latency when every format is ordinary fp16 by the time the forward
+pass runs. Logged because it is now measured rather than assumed, and
+because two things fall out of it:
+
+1. **Harness reproducibility is excellent.** 19.055 ms here vs. 19.076 ms
+   measured in the Phase 0 decode run days earlier, same seq_len and cache
+   arm -- 0.1% apart despite clock locking being unavailable on this card.
+   Differences above ~0.5% in future kernel work are therefore real signal,
+   not thermal drift. Spread across all seven formats here is 0.14%.
+2. **The number the real kernel has to beat: 52 tok/s at 88.7% of practical
+   peak.** The fp16 decode path is already near-roofline, so an INT4 kernel
+   cannot win on efficiency -- only on moving fewer bytes. Holding the same
+   ~340 GB/s achieved against INT4 g128's predicted 2306 MB/step gives
+   ~6.8 ms/token, i.e. **~148 tok/s** as the Phase 1 target.
+
+(An earlier version of this entry logged *prefill* throughput from the
+perplexity pass instead -- 2048-token windows in single forward calls,
+compute-bound GEMM. Wrong regime for this project; replaced by the decode
+table above.)
+
+Results: `results/quant_accuracy_unsloth_Llama-3.2-3B-Instruct_20260915-082450.json`.
+
+**Status**: toolchain, packer (`dequant/packer.py`), and this accuracy
+reference are done. Not yet done: the dequant-GEMV kernel itself and the
+resulting real bandwidth/latency sweep.
+
+---
+
 ## Phase 0 — Instrumentation and roofline
 
 ### Decision — Llama-3.2-3B-Instruct is now the primary bandwidth-benchmark model

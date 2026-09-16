@@ -25,3 +25,6 @@ data/
 Thumbs.db
 
 results/
+
+# graphify generated outputs (caches, machine-specific paths)
+graphify-out/
